@@ -11,6 +11,12 @@ public final class UserDAO {
 
     public static int insert(String username, String passwordHash, String salt) {
         long now = System.currentTimeMillis();
+        // Quick pre-check to avoid a raw UNIQUE constraint bubbling up to the UI.
+        try {
+            User existing = getByUsername(username);
+            if (existing != null) return -2; // sentinel: username already exists
+        } catch (Exception ignored) {}
+
         try (Connection c = Database.getConnection();
              PreparedStatement ps = c.prepareStatement(
                      "INSERT INTO users(username,password_hash,salt,created_at) VALUES (?,?,?,?)",
@@ -23,6 +29,12 @@ public final class UserDAO {
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 if (rs.next()) return rs.getInt(1);
             }
+        } catch (SQLException se) {
+            // If a UNIQUE constraint still triggers (race), return sentinel; log for debugging.
+            String msg = se.getMessage() == null ? "" : se.getMessage().toLowerCase();
+            if (msg.contains("unique") || msg.contains("constraint")) return -2;
+            se.printStackTrace();
+            return -1;
         } catch (Exception e) {
             e.printStackTrace();
         }

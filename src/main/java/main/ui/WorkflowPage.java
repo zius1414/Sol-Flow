@@ -234,7 +234,8 @@ public class WorkflowPage extends JPanel {
         } catch (Exception ex) {
             id = -1;
         }
-        TaskDAO.TaskRecord tr = new TaskDAO.TaskRecord(id, text == null ? "" : text, false, ord, workflowId);
+    long now = System.currentTimeMillis() / 1000L;
+    TaskDAO.TaskRecord tr = new TaskDAO.TaskRecord(id, text == null ? "" : text, false, ord, workflowId, now, 0L, 0);
         addListItem(tr);
     }
 

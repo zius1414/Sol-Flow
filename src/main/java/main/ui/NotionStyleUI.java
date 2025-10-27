@@ -10,6 +10,9 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
 import java.util.List; // <-- added to fix List<WorkflowDAO.Workflow> usage
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.InvocationTargetException;
 
 public class NotionStyleUI {
     // static show() so Main can call NotionStyleUI.show()
@@ -126,6 +129,46 @@ public class NotionStyleUI {
         }
 
         frame.setVisible(true);
+
+        // start background reminder timer to notify about tasks not checked within 24 hours
+        try {
+            java.util.Timer reminderTimer = new java.util.Timer("TaskReminderTimer", true);
+            // Poll frequently (every 10s) so short reminder windows (e.g. 1 minute)
+            // are detected promptly while the app is running. If you prefer lower
+            // CPU usage, increase this value (e.g. 60*1000 for 1 minute, or 3600*1000 for 1 hour).
+            long periodMs = 10_000L; // check every 10 seconds
+            reminderTimer.schedule(new java.util.TimerTask() {
+                @Override public void run() {
+                    try {
+                        // read configurable window (minutes) from settings (default 1440 = 24h)
+                        int windowMinutes = main.db.SettingsDAO.getInt("reminder_window_minutes", 1);
+                        java.util.List<main.db.TaskDAO.TaskRecord> due = main.db.TaskDAO.listTasksNeedingReminderMinutes(windowMinutes);
+                        if (due == null || due.isEmpty()) return;
+                        long now = System.currentTimeMillis() / 1000L;
+                        for (main.db.TaskDAO.TaskRecord tr : due) {
+                            // mark reminder sent immediately to avoid duplicates
+                            main.db.TaskDAO.setLastReminderSent(tr.id, now);
+                            SwingUtilities.invokeLater(() -> {
+                                try {
+                                    String msg = "Reminder: task still open for " + windowMinutes + "+ minutes:\n" + tr.text + "\n\nMark as done?";
+                                    int res = showReminderDialog("Task Reminder", msg);
+                                    if (res == JOptionPane.YES_OPTION) {
+                                        // mark task as checked
+                                        main.db.TaskDAO.update(tr.id, tr.text == null ? "" : tr.text, true, tr.ord);
+                                        // refresh home if currently showing workflow page
+                                        navigateToHome();
+                                    }
+                                } catch (Throwable t) { t.printStackTrace(); }
+                            });
+                        }
+                    } catch (Throwable t) {
+                        t.printStackTrace();
+                    }
+                }
+            }, 10_000L, periodMs); // initial delay 10s then repeat
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
     }
 
     /**
@@ -137,6 +180,45 @@ public class NotionStyleUI {
         SwingUtilities.invokeLater(() -> {
             showHomePage();
         });
+    }
+
+    // Custom themed reminder dialog to ensure good contrast/readability on dark UI
+    private static int showReminderDialog(String title, String message) {
+        final int[] result = new int[]{JOptionPane.CLOSED_OPTION};
+        // build dialog on EDT and block until disposed
+        final JDialog dialog = new JDialog(frame, title, true);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        JPanel root = new JPanel(new BorderLayout(12,12));
+        Color bg = new Color(34, 34, 34);
+        root.setBackground(bg);
+        root.setBorder(BorderFactory.createEmptyBorder(16,16,16,16));
+
+        // message label (use HTML for wrapping and color)
+        String html = "<html><div style='color:#FFFFFF;font-family:Arial;font-size:12px;'>" + message.replace("\n", "<br/>") + "</div></html>";
+        JLabel lbl = new JLabel(html);
+        lbl.setBackground(bg);
+        root.add(lbl, BorderLayout.CENTER);
+
+        // buttons
+        JPanel btns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        btns.setBackground(bg);
+        JButton yes = new JButton("Yes");
+        JButton no = new JButton("No");
+        // style buttons for contrast
+        yes.setBackground(new Color(88, 101, 242)); yes.setForeground(Color.WHITE); yes.setFocusPainted(false); yes.setBorderPainted(false);
+        no.setBackground(new Color(80, 80, 80)); no.setForeground(Color.WHITE); no.setFocusPainted(false); no.setBorderPainted(false);
+        yes.addActionListener(a -> { result[0] = JOptionPane.YES_OPTION; dialog.dispose(); });
+        no.addActionListener(a -> { result[0] = JOptionPane.NO_OPTION; dialog.dispose(); });
+        btns.add(no);
+        btns.add(yes);
+        root.add(btns, BorderLayout.SOUTH);
+
+        dialog.getContentPane().add(root);
+        dialog.pack();
+        dialog.setResizable(false);
+        dialog.setLocationRelativeTo(frame);
+        dialog.setVisible(true);
+        return result[0];
     }
 
     private static void showHomePage() {
@@ -227,10 +309,45 @@ public class NotionStyleUI {
 
         JPanel learnCardsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 15));
         learnCardsPanel.setBackground(new Color(24, 24, 24));
-        learnCardsPanel.add(createLearnCard("Quick<br>Business<br>Breakthroughs", "src/main/resources/assets/learn_1.png"));
-        learnCardsPanel.add(createLearnCard("Create<br>guide to", "src/main/resources/assets/learn_2.png"));
-        learnCardsPanel.add(createLearnCard("Customize &<br>style your", "src/main/resources/assets/learn_3.png"));
-        learnCardsPanel.add(createLearnCard("Getting<br>started", "src/main/resources/assets/learn_4.png"));
+
+        // Link quick-start cards to other app modules / screens.
+        learnCardsPanel.add(createLearnCard("Quick<br>Business<br>Breakthroughs", "src/main/resources/assets/learn_1.png",
+            () -> {
+                // embed InbuiltJavaTemplate1 panel into mainContent (existing behavior)
+                SwingUtilities.invokeLater(() -> {
+                    try {
+                        JPanel embedded = InbuiltJavaTemplate1.createEmbeddedPanel(-1);
+                        mainContent.removeAll();
+                        mainContent.setLayout(new BorderLayout());
+                        mainContent.add(embedded, BorderLayout.CENTER);
+                        mainContent.revalidate();
+                        mainContent.repaint();
+                    } catch (Throwable ex) {
+                        // fallback to opening as a separate window
+                        try { new InbuiltJavaTemplate1().show(); } catch (Throwable ex2) { ex2.printStackTrace(); }
+                    }
+                });
+            }));
+
+        learnCardsPanel.add(createLearnCard("Create<br>Content<br>Creator", "src/main/resources/assets/learn_2.png",
+            () -> launchClass("main.ui.ContentCreatorApp")));
+
+        learnCardsPanel.add(createLearnCard("Docs<br>Upload", "src/main/resources/assets/learn_3.png",
+            () -> launchClass("main.ui.Docupload")));
+
+        learnCardsPanel.add(createLearnCard("Tasks<br>Dashboard", "src/main/resources/assets/learn_4.png",
+            () -> launchClass("main.ui.NotionDashboard")));
+
+        // Additional templates: DashboardUI and NewTemplate (added as quick-starts)
+        learnCardsPanel.add(createLearnCard("Dashboard<br>UI", "src/main/resources/assets/learn_5.png",
+            () -> embedClassAsPanel("main.ui.DashboardUI")));
+
+        learnCardsPanel.add(createLearnCard("New<br>Template", "src/main/resources/assets/learn_6.png",
+            () -> embedClassAsPanel("NewTemplate")));
+
+        learnCardsPanel.add(createLearnCard("Sales<br>Panel", "src/main/resources/assets/learn_7.png",
+            () -> embedClassAsPanel("main.ui.SalesPanel")));
+
         learnCardsPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
         mainContent.add(learnCardsPanel);
 
@@ -461,7 +578,105 @@ public class NotionStyleUI {
         }
     }
 
-    private static JPanel createLearnCard(String title, String imagePath) {
+    // helper: try to launch a UI class by name (show() static/instance, main(String[]), or instantiate JFrame/JPanel)
+    private static void launchClass(String className) {
+        SwingUtilities.invokeLater(() -> {
+            // Try the requested class name, but be resilient: several templates in this
+            // workspace are in the default package (no package statement) even though
+            // source files live under src/main/java/main/ui. To reduce "Component not
+            // found" errors, try a few sensible fallbacks before giving up.
+            String[] candidates = new String[] {
+                className,
+                // if given fqcn contains package segments, try the simple class name too
+                className != null && className.contains(".") ? className.substring(className.lastIndexOf('.') + 1) : null,
+                // try adding the common package if caller used simple name
+                className != null && !className.startsWith("main.") ? "main.ui." + className : null,
+                // try removing the leading package if present (e.g. main.ui.NotionDashboard -> NotionDashboard)
+                className != null && className.startsWith("main.ui.") ? className.substring("main.ui.".length()) : null
+            };
+
+            // iterate candidates; keep trying until one succeeds
+            for (String cand : candidates) {
+                if (cand == null || cand.trim().isEmpty()) continue;
+                try {
+                    Class<?> cls = Class.forName(cand);
+
+                    // 1) try show() — if static invoke with null, if instance invoke on new instance
+                    try {
+                        Method showM = cls.getMethod("show");
+                        if (Modifier.isStatic(showM.getModifiers())) {
+                            showM.invoke(null);
+                            return;
+                        } else {
+                            Object inst = cls.getDeclaredConstructor().newInstance();
+                            showM.invoke(inst);
+                            return;
+                        }
+                    } catch (NoSuchMethodException ignored) {}
+
+                    // 2) try static main(String[])
+                    try {
+                        Method mainM = cls.getMethod("main", String[].class);
+                        if (Modifier.isStatic(mainM.getModifiers())) {
+                            mainM.invoke(null, (Object) new String[0]);
+                            return;
+                        }
+                    } catch (NoSuchMethodException ignored) {}
+
+                    // 3) try no-arg constructor
+                    Object inst = null;
+                    try {
+                        inst = cls.getDeclaredConstructor().newInstance();
+                    } catch (NoSuchMethodException nsme) {
+                        // no default ctor — fallthrough to next candidate
+                    }
+
+                    if (inst != null) {
+                        if (inst instanceof JFrame) {
+                            ((JFrame) inst).setVisible(true);
+                            return;
+                        }
+                        if (inst instanceof JPanel) {
+                            JFrame f = new JFrame(cls.getSimpleName());
+                            f.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                            f.getContentPane().add((JPanel) inst);
+                            f.pack();
+                            f.setLocationRelativeTo(null);
+                            f.setVisible(true);
+                            return;
+                        }
+                    }
+
+                    // last resort: notify user that we found the class but didn't know how to open it
+                    JOptionPane.showMessageDialog(null, "Found class: " + cand + " — launched (no known UI entrypoint).\nTry opening it directly.");
+                    return;
+
+                } catch (ClassNotFoundException e) {
+                    // try next candidate
+                    // try next candidate
+                } catch (InvocationTargetException ite) {
+                    Throwable cause = ite.getCause() != null ? ite.getCause() : ite;
+                    cause.printStackTrace();
+                    JOptionPane.showMessageDialog(null, "Error launching " + cand + ":\n" + cause.getMessage());
+                    return;
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                    JOptionPane.showMessageDialog(null, "Failed to launch " + cand + ":\n" + t.getMessage());
+                    return;
+                }
+            }
+
+            // If we reach here no candidate succeeded
+            String tried = String.join(", ", java.util.Arrays.stream(candidates).filter(s -> s != null).toArray(String[]::new));
+            JOptionPane.showMessageDialog(null,
+                "Component not found: " + className + "\nTried: " + tried + "\n\n" +
+                "Possible causes: class not compiled or not on runtime classpath.\n" +
+                "Build the project (mvn -DskipTests package) and run with target/classes on the classpath.");
+        });
+    }
+
+    // change signature: accept Runnable action to run when clicked
+    private static JPanel createLearnCard(String title, String imagePath, Runnable action) {
         JPanel card = createRoundedPanel(new Color(38, 38, 38), 10, false, true);
         card.setPreferredSize(new Dimension(250, 80));
         card.setLayout(new BorderLayout(10, 0));
@@ -492,26 +707,13 @@ public class NotionStyleUI {
             card.add(placeholder, BorderLayout.EAST);
         }
 
-        // make quick-start card clickable: embed the inbuilt template into the main content area
+        // make quick-start card clickable: use provided action
         card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        card.addMouseListener(new MouseAdapter() {
-            @Override public void mouseClicked(MouseEvent e) {
-                SwingUtilities.invokeLater(() -> {
-                    try {
-                        // create an embeddable panel and show it inside the mainContent area
-                        JPanel embedded = InbuiltJavaTemplate1.createEmbeddedPanel(-1);
-                        mainContent.removeAll();
-                        mainContent.setLayout(new BorderLayout());
-                        mainContent.add(embedded, BorderLayout.CENTER);
-                        mainContent.revalidate();
-                        mainContent.repaint();
-                    } catch (Exception ex) {
-                        // fallback: open in a separate window
-                        new InbuiltJavaTemplate1().show();
-                    }
-                });
-            }
-        });
+        if (action != null) {
+            card.addMouseListener(new MouseAdapter() {
+                @Override public void mouseClicked(MouseEvent e) { action.run(); }
+            });
+        }
 
         return card;
     }
@@ -550,5 +752,101 @@ public class NotionStyleUI {
         }
 
         return panel;
+    }
+
+    // Try to embed a UI class as a panel inside the mainContent area.
+    private static void embedClassAsPanel(String className) {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                // Try a few candidate names (same approach as launchClass)
+                String[] candidates = new String[] {
+                    className,
+                    className != null && className.contains(".") ? className.substring(className.lastIndexOf('.') + 1) : null,
+                    className != null && !className.startsWith("main.") ? "main.ui." + className : null,
+                    className != null && className.startsWith("main.ui.") ? className.substring("main.ui.".length()) : null
+                };
+
+                for (String cand : candidates) {
+                    if (cand == null || cand.trim().isEmpty()) continue;
+                    try {
+                        Class<?> cls = Class.forName(cand);
+
+                        // 1) If class has a static factory createEmbeddedPanel() that returns JPanel, use it
+                        try {
+                            Method m = cls.getMethod("createEmbeddedPanel");
+                            Object res = m.invoke(null);
+                            if (res instanceof JPanel) {
+                                showPanelInMain((JPanel) res, cls.getSimpleName());
+                                return;
+                            }
+                        } catch (NoSuchMethodException ignored) {}
+
+                        // 2) If class is a JFrame subclass, instantiate and take its content pane
+                        if (JFrame.class.isAssignableFrom(cls)) {
+                            Object inst = cls.getDeclaredConstructor().newInstance();
+                            if (inst instanceof JFrame) {
+                                Container content = ((JFrame) inst).getContentPane();
+                                // Detach content into a panel wrapper
+                                JPanel wrapper = new JPanel(new BorderLayout());
+                                wrapper.add(content, BorderLayout.CENTER);
+                                showPanelInMain(wrapper, cls.getSimpleName());
+                                return;
+                            }
+                        }
+
+                        // 3) If class itself is a JPanel, instantiate and embed
+                        if (JPanel.class.isAssignableFrom(cls)) {
+                            Object inst = cls.getDeclaredConstructor().newInstance();
+                            if (inst instanceof JPanel) {
+                                showPanelInMain((JPanel) inst, cls.getSimpleName());
+                                return;
+                            }
+                        }
+
+                        // 4) Try inner classes: look for a declared class that extends JPanel
+                        for (Class<?> inner : cls.getDeclaredClasses()) {
+                            if (JPanel.class.isAssignableFrom(inner)) {
+                                Object inst = inner.getDeclaredConstructor().newInstance();
+                                if (inst instanceof JPanel) {
+                                    showPanelInMain((JPanel) inst, inner.getSimpleName());
+                                    return;
+                                }
+                            }
+                        }
+
+                    } catch (ClassNotFoundException cnf) {
+                        // try next candidate
+                    }
+                }
+
+                // If nothing worked, show an informative message
+                JOptionPane.showMessageDialog(frame,
+                    "Could not embed component: " + className + "\n" +
+                    "Tried common names and patterns. Ensure the class is compiled and exposes a JPanel or a createEmbeddedPanel() static method.");
+
+            } catch (InvocationTargetException ite) {
+                Throwable cause = ite.getCause() != null ? ite.getCause() : ite;
+                cause.printStackTrace();
+                JOptionPane.showMessageDialog(frame, "Error embedding " + className + ":\n" + cause.getMessage());
+            } catch (Throwable t) {
+                t.printStackTrace();
+                JOptionPane.showMessageDialog(frame, "Failed to embed " + className + ":\n" + t.getMessage());
+            }
+        });
+    }
+
+    private static void showPanelInMain(JPanel panel, String title) {
+        // replace mainContent contents with the provided panel
+        mainContent.removeAll();
+        mainContent.setLayout(new BorderLayout());
+        mainContent.add(panel, BorderLayout.CENTER);
+        // add a small back button to return to home
+        JButton back = new JButton("Back");
+        back.addActionListener(e -> showHomePage());
+        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT)); top.setOpaque(false);
+        top.add(back);
+        mainContent.add(top, BorderLayout.NORTH);
+        mainContent.revalidate();
+        mainContent.repaint();
     }
 }

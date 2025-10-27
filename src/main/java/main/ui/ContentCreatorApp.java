@@ -36,9 +36,10 @@ public class ContentCreatorApp extends JPanel {
     private static final Color HEADER_BG = UITheme.ACCENT.darker();
     private static final Color HEADER_GRADIENT = UITheme.ACCENT;
 
-    // Path you gave (escape backslashes if used elsewhere)
-    private static final String GOOGLE_ICON_PATH =
-            "C:\\Users\\joyal\\OneDrive\\Documents\\SolFlow\\src\\main\\resources\\assets\\google.png";
+    // Prefer loading icon from classpath resource; fallback to local file path if provided on disk.
+    private static final String GOOGLE_ICON_RESOURCE = "/assets/google.png";
+    // Optional local fallback path (kept for compatibility with existing setups)
+    private static final String GOOGLE_ICON_FALLBACK = System.getProperty("user.home") + File.separator + "OneDrive" + File.separator + "Documents" + File.separator + "SolFlow" + File.separator + "src" + File.separator + "main" + File.separator + "resources" + File.separator + "assets" + File.separator + "google.png";
 
     public ContentCreatorApp() {
     setLayout(new BorderLayout());
@@ -72,15 +73,17 @@ public class ContentCreatorApp extends JPanel {
         headerActions.setOpaque(false);
         JButton headerAddSmall = createHeaderSmallBtn("+", e -> addBtn.doClick());
         JButton headerGoogleSmall = createHeaderSmallBtn("", e -> googleBtn.doClick());
-        // try to set a small google icon if available
+        // try to set a small google icon if available (classpath first, then fallback file)
         try {
-            File gf = new File(GOOGLE_ICON_PATH);
-            if (gf.exists()) {
-                Image gi = ImageIO.read(gf).getScaledInstance(18, 18, Image.SCALE_SMOOTH);
-                headerGoogleSmall.setIcon(new ImageIcon(gi));
+            java.net.URL res = getClass().getResource(GOOGLE_ICON_RESOURCE);
+            Image gi = null;
+            if (res != null) {
+                gi = ImageIO.read(res).getScaledInstance(18, 18, Image.SCALE_SMOOTH);
             } else {
-                headerGoogleSmall.setText("G");
+                File gf = new File(GOOGLE_ICON_FALLBACK);
+                if (gf.exists()) gi = ImageIO.read(gf).getScaledInstance(18, 18, Image.SCALE_SMOOTH);
             }
+            if (gi != null) headerGoogleSmall.setIcon(new ImageIcon(gi)); else headerGoogleSmall.setText("G");
         } catch (Exception ignored) { headerGoogleSmall.setText("G"); }
         headerActions.add(headerAddSmall);
         headerActions.add(headerGoogleSmall);
@@ -106,7 +109,7 @@ public class ContentCreatorApp extends JPanel {
         leftBar.add(Box.createRigidArea(new Dimension(0, 18)));
 
         // Google image button
-    googleBtn = createImageButton(GOOGLE_ICON_PATH, 62, 62);
+    googleBtn = createImageButton(62, 62);
     // style primary-like controls
     UITheme.stylePrimaryButton(addBtn);
         googleBtn.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -145,23 +148,39 @@ public class ContentCreatorApp extends JPanel {
             canvas.repaint();
         });
 
-        // google btn action (for demonstration) - simply shows a small dialog
-        googleBtn.addActionListener(e -> JOptionPane.showMessageDialog(this,
-                "Google icon loaded from:\n" + GOOGLE_ICON_PATH,
-                "Icon info", JOptionPane.INFORMATION_MESSAGE));
+        // google btn action (for demonstration) - show where the icon was loaded from (classpath or fallback)
+        googleBtn.addActionListener(e -> {
+            String src = "(not found)";
+            java.net.URL res = getClass().getResource(GOOGLE_ICON_RESOURCE);
+            if (res != null) src = "classpath:" + GOOGLE_ICON_RESOURCE;
+            else {
+                File f = new File(GOOGLE_ICON_FALLBACK);
+                if (f.exists()) src = f.getAbsolutePath();
+            }
+            JOptionPane.showMessageDialog(this, "Google icon loaded from:\n" + src, "Icon info", JOptionPane.INFORMATION_MESSAGE);
+        });
 
         // wrap the page content with the shared navigation bar
         add(NavigationBar.wrap(pageContent), BorderLayout.CENTER);
     }
 
-    private JButton createImageButton(String path, int w, int h) {
+    private JButton createImageButton(int w, int h) {
         JButton b = new RoundedIconButton("", w, h);
         try {
-            File f = new File(path);
-            if (!f.exists()) throw new IOException("file not found");
-            Image img = ImageIO.read(f);
-            Image scaled = img.getScaledInstance(w - 12, h - 12, Image.SCALE_SMOOTH);
-            b.setIcon(new ImageIcon(scaled));
+            Image img = null;
+            java.net.URL res = getClass().getResource(GOOGLE_ICON_RESOURCE);
+            if (res != null) {
+                img = ImageIO.read(res);
+            } else {
+                File f = new File(GOOGLE_ICON_FALLBACK);
+                if (f.exists()) img = ImageIO.read(f);
+            }
+            if (img != null) {
+                Image scaled = img.getScaledInstance(w - 12, h - 12, Image.SCALE_SMOOTH);
+                b.setIcon(new ImageIcon(scaled));
+            } else {
+                throw new IOException("icon not found");
+            }
         } catch (IOException ex) {
             // fallback text
             b.setText("G");
